@@ -1,0 +1,59 @@
+#!/bin/bash
+
+# Set up the directories
+VIDEO_ARCHIVE="$HOME/videoarchive"
+LOG_DIR="$HOME/videoarchive_logs"
+SITES_LOG="$LOG_DIR/sites_taken_down.log"
+VIDEOS_LOG="$LOG_DIR/videos_taken_down.log"
+
+mkdir -p "$VIDEO_ARCHIVE"
+mkdir -p "$LOG_DIR"
+
+# Define the source URL
+SOURCE_URL=$1
+
+# Temporary file for storing links
+TMP_FILE=$(mktemp)
+
+# Ensure yt-dlp is installed
+if ! command -v yt-dlp &> /dev/null; then
+    echo "yt-dlp is not installed. Please install it and try again."
+    exit 1
+fi
+
+# Fetch links from the source page
+echo "Fetching links from $SOURCE_URL..."
+curl -s "$SOURCE_URL" | grep -oP '(?<=href=")[^"]+' > "$TMP_FILE"
+
+# Process each link
+echo "Processing links..."
+while read -r LINK; do
+    # Handle relative and absolute URLs
+    if [[ "$LINK" != http* ]]; then
+        LINK=$(dirname "$SOURCE_URL")/$LINK
+    fi
+
+    echo "Checking for videos at $LINK..."
+    
+    # Attempt to download videos from the link
+    yt-dlp --output "$VIDEO_ARCHIVE/%(title)s.%(ext)s" "$LINK" 2>&1 | tee download_output.log
+
+    # Check if the site was unreachable
+    if grep -q "ERROR: Unable to download webpage" download_output.log; then
+        echo "$(date): Site down - $LINK" >> "$SITES_LOG"
+        echo "Site $LINK was unreachable and logged."
+    fi
+
+    # Check for individual video download errors
+    if grep -q "ERROR: [^:]*: Video unavailable" download_output.log; then
+        grep "ERROR: [^:]*: Video unavailable" download_output.log | \
+        sed "s/^/$(date): Video down - /" >> "$VIDEOS_LOG"
+        echo "Some videos from $LINK were unavailable and logged."
+    fi
+
+done < "$TMP_FILE"
+
+# Clean up
+rm -f "$TMP_FILE" download_output.log
+
+echo "Processing complete. Logs saved to $LOG_DIR."
